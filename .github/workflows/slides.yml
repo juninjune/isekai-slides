@@ -1,0 +1,80 @@
+name: PDF to Slides
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "input/**.pdf"
+      - "scripts/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate PDF (input/ 에 정확히 1개)
+        id: pdf
+        run: |
+          shopt -s nullglob nocaseglob
+          PDFS=(input/*.pdf)
+          if [ ${#PDFS[@]} -eq 0 ]; then
+            echo "::error::input/ 에 PDF가 없습니다."; exit 1
+          fi
+          if [ ${#PDFS[@]} -gt 1 ]; then
+            echo "::error::input/ 에 PDF가 여러 개입니다: ${PDFS[*]} — 1개만 남겨주세요."; exit 1
+          fi
+          echo "path=${PDFS[0]}" >> $GITHUB_OUTPUT
+          echo "name=$(basename "${PDFS[0]}")" >> $GITHUB_OUTPUT
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y poppler-utils
+          pip install pdf2image Pillow
+
+      - name: Convert
+        run: python scripts/convert_pdf.py "${{ steps.pdf.outputs.path }}" "${{ steps.pdf.outputs.name }}"
+
+      - name: Commit slides
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Web/
+          if git diff --cached --quiet; then
+            echo "변경 없음."
+          else
+            TOTAL=$(python3 -c "import json; print(json.load(open('Web/meta.json'))['total_pages'])")
+            git commit -m "slides: ${{ steps.pdf.outputs.name }} → ${TOTAL}장"
+            git push
+          fi
+
+  deploy:
+    needs: convert
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./Web
+      - id: deployment
+        uses: actions/deploy-pages@v4
